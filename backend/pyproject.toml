@@ -1,0 +1,22 @@
+[project]
+name = "sat-moi-app"
+version = "1.0.0"
+description = "Satellite moment-of-inertia aggregator — base SV tensor plus deployables with parallel-axis shift"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "numpy>=2.0",
+    "pydantic>=2.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.28",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
