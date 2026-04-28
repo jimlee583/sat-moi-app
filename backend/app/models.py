@@ -126,6 +126,15 @@ class WheelArrayInput(BaseModel):
         gt=0.0,
         description="Per-wheel maximum stored angular momentum magnitude [N·m·s]",
     )
+    max_wheel_speed_rpm: Optional[float] = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "Optional per-wheel maximum spin rate [RPM]. When provided, the "
+            "rotor inertia is derived as J_w = max_momentum / (max_speed · 2π/60) "
+            "and the slew time-series response includes per-wheel speed in RPM."
+        ),
+    )
 
 
 class ManeuverInput(BaseModel):
@@ -206,6 +215,15 @@ class SlewComputeRequest(BaseModel):
             "defaults to max(180°, 1.5 × the requested slew)"
         ),
     )
+    timeseries_samples: int = Field(
+        default=80,
+        ge=10,
+        le=400,
+        description=(
+            "Number of uniformly-spaced (in time) samples returned in the "
+            "slew time-series for the attitude/wheel-speed visualizer"
+        ),
+    )
 
 
 class SlewCurvePoint(BaseModel):
@@ -214,6 +232,50 @@ class SlewCurvePoint(BaseModel):
     angle_deg: float
     slew_time_s: float
     regime: Literal["zero", "torque_limited", "momentum_limited", "infeasible"]
+
+
+class SlewTimeseries(BaseModel):
+    """Closed-form bang-bang slew sampled in time, for the attitude visualizer.
+
+    All samples are uniformly spaced in ``t_s`` over ``[0, slew_time_s]``.
+    The body attitude is encoded as a scalar-first quaternion mapping the
+    LVLH reference frame to the body frame, assuming the body starts aligned
+    with LVLH at ``t=0`` (identity initial attitude — a v1 limitation).
+
+    Per-wheel momentum is computed from rigid-body angular-momentum
+    conservation with zero initial wheel momentum:
+    ``H_wheels_body(t) = -I_total · ω_body(t)`` and per-wheel
+    ``u(t) = W⁺ · H_wheels_body(t)``.
+
+    ``wheel_speed_rpm`` and ``wheel_rotor_inertia_kgm2`` are populated only
+    when ``max_wheel_speed_rpm`` was supplied on the request.
+    """
+
+    t_s: list[float]
+    body_angle_rad: list[float]
+    body_rate_rad_s: list[float]
+    body_quat_lvlh_to_body: list[
+        tuple[float, float, float, float]
+    ] = Field(description="Scalar-first quaternion [w, x, y, z] per sample")
+    wheel_momentum_nms: list[
+        tuple[float, float, float, float]
+    ] = Field(description="Per-wheel stored momentum [N·m·s] per sample (W1..W4)")
+    wheel_speed_rpm: Optional[
+        list[tuple[float, float, float, float]]
+    ] = Field(
+        default=None,
+        description=(
+            "Per-wheel signed spin rate [RPM] per sample (W1..W4); only "
+            "populated when wheel_array.max_wheel_speed_rpm was given"
+        ),
+    )
+    wheel_rotor_inertia_kgm2: Optional[float] = Field(
+        default=None,
+        description=(
+            "Derived per-wheel rotor inertia J_w = h_max / ω_max [kg·m²]; "
+            "only populated when wheel_array.max_wheel_speed_rpm was given"
+        ),
+    )
 
 
 class SlewComputeResponse(BaseModel):
@@ -251,4 +313,13 @@ class SlewComputeResponse(BaseModel):
     ] = Field(description="Unit spin axis of each wheel in the SV body frame")
     curve: list[SlewCurvePoint] = Field(
         description="Sampled (angle, slew_time) pairs for plotting"
+    )
+    timeseries: Optional[SlewTimeseries] = Field(
+        default=None,
+        description=(
+            "Time-domain slew samples (attitude quaternion, body rate, "
+            "per-wheel momentum, optionally per-wheel RPM) for the 3D "
+            "attitude/wheel-speed visualizer. Omitted when the maneuver "
+            "is zero or infeasible."
+        ),
     )
