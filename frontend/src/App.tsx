@@ -7,6 +7,7 @@ import DeployablesTable, {
 } from "./components/DeployablesTable";
 import type { DeployableRowState } from "./components/DeployablesTable";
 import ResultsCards from "./components/ResultsCards";
+import SlewSection from "./components/SlewSection";
 import { computeMoi } from "./api/moi";
 import type {
   MoiComputeRequest,
@@ -84,7 +85,7 @@ export default function App() {
       <header style={styles.header}>
         <h1 style={styles.title}>Satellite Moment of Inertia Aggregator</h1>
         <span style={styles.version}>
-          v1.0 — base SV + deployables with parallel-axis shift
+          v1.1 — MOI aggregation + 4-wheel pyramid RWA slew time
         </span>
       </header>
 
@@ -150,6 +151,8 @@ export default function App() {
               </div>
             )
           )}
+
+          <SlewSection moiResult={result} />
         </main>
       </div>
     </div>

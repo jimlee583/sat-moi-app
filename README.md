@@ -5,10 +5,18 @@ tensor and an arbitrary number of deployables (solar arrays, antennas, booms,
 reflectors, …), applying the **parallel-axis theorem** to shift each
 deployable's local inertia to the SV reference point.
 
-Inputs can be entered in either **SI** (`kg·m²`, `kg`, `m`) or **English**
-engineering units (`slug·ft²`, `slug`, `ft`); the app converts to SI
-internally, performs the math, and displays results in whichever system is
-currently selected.
+The aggregate inertia then feeds a **slew-time analyzer** for a 4-wheel
+pyramid reaction-wheel array (RWA): given per-wheel torque/momentum specs,
+a user-selectable cant angle, and a maneuver (eigenaxis + angle, or a
+quaternion pair), the app reports the rest-to-rest eigenaxis slew time, the
+controlling regime (torque- vs momentum-limited), peak body rate, and a
+slew-time-versus-angle curve for visual inspection.
+
+Inputs to the MOI aggregator can be entered in either **SI** (`kg·m²`, `kg`,
+`m`) or **English** engineering units (`slug·ft²`, `slug`, `ft`); the app
+converts to SI internally. The slew analyzer is SI-only on the wire
+(`N·m`, `N·m·s`, deg, kg·m²) — actuator catalog data is almost universally
+SI.
 
 The dev/build environment mirrors `sat-solar-beta-app`: FastAPI + `uv`
 backend, Vite + React 19 + TypeScript frontend, Dockerfile for Cloud Run,
@@ -21,12 +29,15 @@ sat-moi-app/
   backend/                FastAPI + uv + numpy + pydantic
     app/
       main.py             FastAPI app, CORS, /health
-      models.py           Pydantic request/response models
-      routers/moi.py      POST /api/moi/compute
+      models.py           Pydantic request/response models (MOI + slew)
+      routers/
+        moi.py            POST /api/moi/compute
+        slew.py           POST /api/slew/compute
       services/
         inertia.py        Tensor build, parallel-axis, eigendecomp
+        slew.py           Pyramid wheel allocation + slew kinematics
         units.py          SI <-> English helpers
-    tests/                pytest + httpx (28 tests)
+    tests/                pytest + httpx (54 tests)
     Dockerfile            Cloud Run-ready multi-stage build
     pyproject.toml
   frontend/               Vite 6 + React 19 + TypeScript 5.7
@@ -35,12 +46,19 @@ sat-moi-app/
       api/
         client.ts         fetch wrapper with VITE_API_BASE_URL support
         moi.ts            typed POST /api/moi/compute
+        slew.ts           typed POST /api/slew/compute
       components/
         UnitToggle.tsx
         BaseSVPanel.tsx
         DeployablesTable.tsx
         ResultsCards.tsx
-      types/moi.ts        Shared request/response + unit conversion helpers
+        WheelArrayPanel.tsx
+        ManeuverPanel.tsx
+        SlewResultsCards.tsx       Numbers + SVG t_slew(θ) chart
+        SlewSection.tsx            Wheels + maneuver + compute + results
+      types/
+        moi.ts            Shared MOI request/response + unit conversion
+        slew.ts           Shared slew request/response
     firebase.json         Firebase Hosting config
     vite.config.ts        Dev proxy /api -> localhost:8006
 ```
@@ -62,6 +80,7 @@ Once running:
 
 - `GET  http://localhost:8006/health`
 - `POST http://localhost:8006/api/moi/compute`
+- `POST http://localhost:8006/api/slew/compute`
 - OpenAPI docs: `http://localhost:8006/docs`
 
 Run the tests:
@@ -145,6 +164,119 @@ Response:
   ]
 }
 ```
+
+### `POST /api/slew/compute`
+
+Rest-to-rest, eigenaxis slew time for a 4-wheel pyramid RWA, given the
+aggregate inertia tensor (typically the `total_inertia_kgm2` returned by
+`/api/moi/compute`). Everything on the wire is **SI**: torques in `N·m`,
+momenta in `N·m·s`, angles in `deg`, inertia in `kg·m²`.
+
+**Pyramid geometry.** Four wheels are placed at body-frame azimuths
+`0°, 90°, 180°, 270°` around `+Z`, each canted from `+Z` by
+`cant_angle_deg` (default ≈ `arctan(√2) ≈ 54.7356°`, the canonical
+"balanced" pyramid).
+
+**Per-axis capability** (used for both torque and momentum). For desired
+unit eigenaxis `ê`, allocate with the Moore–Penrose pseudoinverse and
+scale until the worst wheel hits its per-wheel limit:
+
+```
+W = [ŵ₁  ŵ₂  ŵ₃  ŵ₄]                 (3×4 wheel-spin matrix)
+ŵᵢ = [sin(β) cos(φᵢ), sin(β) sin(φᵢ), cos(β)]
+τ_ê,max = τ_wheel_max / max_i |[W⁺ ê]_i|
+h_ê,max = h_wheel_max / max_i |[W⁺ ê]_i|
+```
+
+**Effective inertia about ê.** `I_ê = êᵀ I_total ê` (not any single
+`Ixx/Iyy/Izz` unless ê is a principal axis).
+
+**Slew kinematics (rest-to-rest, bang-bang).** Crossover angle
+`θ× = h_ê² / (τ_ê · I_ê)`.
+
+```
+torque-limited (θ ≤ θ×, triangular profile):
+  ω_peak     = sqrt(θ τ_ê / I_ê)
+  t_slew     = 2 sqrt(θ I_ê / τ_ê)
+
+momentum-limited (θ > θ×, trapezoidal profile):
+  ω_coast    = h_ê / I_ê
+  t_slew     = θ I_ê / h_ê + h_ê / τ_ê
+```
+
+**Maneuver input.** Either `eigenaxis_angle` (axis is auto-normalised) or
+`quaternion_pair` (scalar-first body-from-inertial unit quaternions; the
+shortest-path body-frame error quaternion `q_e = q_initial⁻¹ ⊗ q_final` is
+used, with `q_e ← -q_e` if `q_e[0] < 0` so the resulting angle lies in
+`[0, π]`).
+
+Request body (eigenaxis/angle mode):
+
+```jsonc
+{
+  "total_inertia_kgm2": {
+    "ixx": 1078.0, "iyy": 1500.2, "izz": 1878.0,
+    "ixy": 0.0, "ixz": 0.0, "iyz": 0.0
+  },
+  "wheel_array": {
+    "layout": "pyramid_4",
+    "cant_angle_deg": 54.7356,             // default ≈ arctan(√2)
+    "max_torque_per_wheel_nm": 0.2,
+    "max_momentum_per_wheel_nms": 12.0
+  },
+  "maneuver": {
+    "mode": "eigenaxis_angle",
+    "eigenaxis": [0.0, 0.0, 1.0],          // auto-normalised
+    "angle_deg": 30.0                      // (0, 180]
+  },
+  "curve_points": 60,                      // optional, default 60
+  "curve_max_angle_deg": 180.0             // optional; default = max(180°, 1.5×θ)
+}
+```
+
+Quaternion-pair mode swaps the `maneuver` block for:
+
+```jsonc
+"maneuver": {
+  "mode": "quaternion_pair",
+  "q_initial": [1.0, 0.0, 0.0, 0.0],          // [w, x, y, z]
+  "q_final":   [0.7071068, 0.0, 0.0, 0.7071068]
+}
+```
+
+Response:
+
+```jsonc
+{
+  "eigenaxis_unit": [0.0, 0.0, 1.0],
+  "slew_angle_deg": 30.0,
+  "slew_angle_rad": 0.5235988,
+  "effective_inertia_kgm2": 1878.0,
+  "axis_max_torque_nm": 0.4619,             // 4 cos(β) · per-wheel for ê=+Z
+  "axis_max_momentum_nms": 27.7128,
+  "crossover_angle_deg": 26.0,
+  "regime": "momentum_limited",             // or "torque_limited" | "zero" | "infeasible"
+  "peak_rate_rad_s": 0.01475,
+  "peak_rate_deg_s": 0.8454,
+  "slew_time_s": 37.65,
+  "wheel_axes_body": [
+    [ 0.8165,  0.0,    0.5774],
+    [ 0.0,     0.8165, 0.5774],
+    [-0.8165,  0.0,    0.5774],
+    [ 0.0,    -0.8165, 0.5774]
+  ],
+  "curve": [
+    {"angle_deg": 0.0, "slew_time_s": 0.0, "regime": "zero"},
+    // ... 58 more samples ...
+    {"angle_deg": 180.0, "slew_time_s": 169.13, "regime": "momentum_limited"}
+  ]
+}
+```
+
+**v1 caveats.** This is a rigid-body, open-loop lower bound. It ignores
+controller settling, gyroscopic coupling between body rates and stored
+wheel momentum, flexible-body modes, and disturbance torques. CMGs are
+out of scope.
 
 ## Unit conversions (exact)
 
