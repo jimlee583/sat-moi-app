@@ -4,6 +4,9 @@ export interface WheelArrayState {
   cant: string;
   tauPerWheel: string;
   hPerWheel: string;
+  /** Optional per-wheel max spin rate (RPM). When present, the slew
+   *  visualizer plots per-wheel speed in RPM and derives J_w internally. */
+  maxRpm: string;
 }
 
 export function defaultWheelArrayState(): WheelArrayState {
@@ -11,6 +14,7 @@ export function defaultWheelArrayState(): WheelArrayState {
     cant: DEFAULT_CANT_DEG.toFixed(4),
     tauPerWheel: "0.2",
     hPerWheel: "12",
+    maxRpm: "6000",
   };
 }
 
@@ -62,6 +66,17 @@ export default function WheelArrayPanel({ value, onChange }: Props) {
         />
       </div>
 
+      <div style={styles.grid1}>
+        <NumberField
+          label="Per-wheel max speed (RPM, optional)"
+          value={value.maxRpm}
+          onChange={(v) => set("maxRpm", v)}
+          min={0}
+          placeholder="e.g. 6000"
+        />
+      </div>
+      <JwHint h={value.hPerWheel} rpm={value.maxRpm} />
+
       <button
         type="button"
         onClick={() => onChange(defaultWheelArrayState())}
@@ -69,6 +84,28 @@ export default function WheelArrayPanel({ value, onChange }: Props) {
       >
         Reset to defaults
       </button>
+    </div>
+  );
+}
+
+function JwHint({ h, rpm }: { h: string; rpm: string }) {
+  const hNum = Number(h);
+  const rpmNum = Number(rpm);
+  if (!Number.isFinite(hNum) || hNum <= 0) return null;
+  if (!Number.isFinite(rpmNum) || rpmNum <= 0) {
+    return (
+      <div style={styles.jwHint}>
+        Add a max-speed value to plot wheel speed in RPM. Without it, the
+        visualizer shows per-wheel stored momentum (N·m·s) instead.
+      </div>
+    );
+  }
+  const omegaMax = (rpmNum * 2 * Math.PI) / 60;
+  const jw = hNum / omegaMax;
+  return (
+    <div style={styles.jwHint}>
+      Derived rotor inertia <code style={styles.code}>J_w = h_max / ω_max ≈ {jw.toExponential(3)}</code>{" "}
+      kg·m².
     </div>
   );
 }
@@ -170,5 +207,20 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: "pointer",
     padding: 0,
     textDecoration: "underline",
+  },
+  jwHint: {
+    fontSize: "0.72rem",
+    color: "#495057",
+    background: "#f8f9fa",
+    border: "1px solid #e9ecef",
+    borderRadius: "5px",
+    padding: "0.4rem 0.55rem",
+    lineHeight: 1.4,
+  },
+  code: {
+    fontFamily:
+      "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    fontSize: "0.72rem",
+    background: "transparent",
   },
 };

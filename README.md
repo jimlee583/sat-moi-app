@@ -153,7 +153,7 @@ sat-moi-app/
         inertia.py        Tensor build, parallel-axis, eigendecomp
         slew.py           Pyramid wheel allocation + slew kinematics
         units.py          SI <-> English helpers
-    tests/                pytest + httpx (54 tests)
+    tests/                pytest + httpx (66 tests)
     Dockerfile            Cloud Run-ready multi-stage build
     pyproject.toml
   frontend/               Vite 6 + React 19 + TypeScript 5.7
@@ -171,7 +171,8 @@ sat-moi-app/
         WheelArrayPanel.tsx
         ManeuverPanel.tsx
         SlewResultsCards.tsx       Numbers + SVG t_slew(θ) chart
-        SlewSection.tsx            Wheels + maneuver + compute + results
+        SlewVisualizer.tsx         3D body+LVLH triad (r3f) + wheel speed strip chart
+        SlewSection.tsx            Wheels + maneuver + compute + results + visualizer
       types/
         moi.ts            Shared MOI request/response + unit conversion
         slew.ts           Shared slew request/response
@@ -293,6 +294,13 @@ momenta in `N·m·s`, angles in `deg`, inertia in `kg·m²`.
 `cant_angle_deg` (default ≈ `arctan(√2) ≈ 54.7356°`, the canonical
 "balanced" pyramid).
 
+**Optional max wheel speed.** If `max_wheel_speed_rpm` is supplied on
+the wheel array, the per-wheel rotor inertia is derived as
+`J_w = max_momentum / (max_speed · 2π/60)` and the response includes a
+per-wheel speed (RPM) time-series in addition to per-wheel momentum
+(see `timeseries` below). The HR16-75 spec, for example, gives
+`J_w = 75 / (6000 · 2π/60) ≈ 0.119 kg·m²`.
+
 **Per-axis capability** (used for both torque and momentum). For desired
 unit eigenaxis `ê`, allocate with the Moore–Penrose pseudoinverse and
 scale until the worst wheel hits its per-wheel limit:
@@ -338,7 +346,8 @@ Request body (eigenaxis/angle mode):
     "layout": "pyramid_4",
     "cant_angle_deg": 54.7356,             // default ≈ arctan(√2)
     "max_torque_per_wheel_nm": 0.2,
-    "max_momentum_per_wheel_nms": 12.0
+    "max_momentum_per_wheel_nms": 12.0,
+    "max_wheel_speed_rpm": 6000.0          // optional; enables wheel RPM in timeseries
   },
   "maneuver": {
     "mode": "eigenaxis_angle",
@@ -346,7 +355,8 @@ Request body (eigenaxis/angle mode):
     "angle_deg": 30.0                      // (0, 180]
   },
   "curve_points": 60,                      // optional, default 60
-  "curve_max_angle_deg": 180.0             // optional; default = max(180°, 1.5×θ)
+  "curve_max_angle_deg": 180.0,            // optional; default = max(180°, 1.5×θ)
+  "timeseries_samples": 80                 // optional, default 80, in [10, 400]
 }
 ```
 
@@ -385,9 +395,39 @@ Response:
     {"angle_deg": 0.0, "slew_time_s": 0.0, "regime": "zero"},
     // ... 58 more samples ...
     {"angle_deg": 180.0, "slew_time_s": 169.13, "regime": "momentum_limited"}
-  ]
+  ],
+  "timeseries": {                          // null for zero / infeasible regimes
+    "t_s":            [0.0, ..., 37.65],
+    "body_angle_rad": [0.0, ..., 0.5236],
+    "body_rate_rad_s":[0.0, ..., 0.0],
+    "body_quat_lvlh_to_body": [            // scalar-first [w, x, y, z]
+      [1.0, 0.0, 0.0, 0.0],
+      // ...
+      [0.9659, 0.0, 0.0, 0.2588]
+    ],
+    "wheel_momentum_nms": [                // per sample, [W1, W2, W3, W4]
+      [0.0, 0.0, 0.0, 0.0],
+      // ...
+    ],
+    "wheel_speed_rpm": [                   // present only if max_wheel_speed_rpm given
+      [0.0, 0.0, 0.0, 0.0],
+      // ...
+    ],
+    "wheel_rotor_inertia_kgm2": 0.0191     // J_w = h_max / ω_max, or null
+  }
 }
 ```
+
+**Visualization (frontend).** The frontend renders a 3D scene of the SV
+body axes rotating inside a fixed LVLH triad, paired with a per-wheel
+strip chart on the same time axis. v1 assumes the body frame is
+**aligned with LVLH at `t = 0`** (identity initial attitude); the slew
+is applied about the body eigenaxis ê, which equals the same vector in
+LVLH for a single-axis rotation, so no extra frame transform is
+required. The LVLH axes are labelled `+X = along-track`,
+`+Y = -orbit normal`, `+Z = nadir`. RPM signs are physical: a wheel
+spinning the opposite sense of the dispatched body torque comes back
+through zero.
 
 **v1 caveats.** This is a rigid-body, open-loop lower bound. It ignores
 controller settling, gyroscopic coupling between body rates and stored

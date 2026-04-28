@@ -8,6 +8,7 @@ import ManeuverPanel, {
   type ManeuverState,
 } from "./ManeuverPanel";
 import SlewResultsCards from "./SlewResultsCards";
+import SlewVisualizer from "./SlewVisualizer";
 import { computeSlew } from "../api/slew";
 import type {
   InertiaComponents,
@@ -86,6 +87,13 @@ export default function SlewSection({ moiResult }: Props) {
 
       {error && <div style={styles.error}>{error}</div>}
       {result && <SlewResultsCards result={result} />}
+      {result && result.timeseries && <SlewVisualizer result={result} />}
+      {result && !result.timeseries && (
+        <div style={styles.gateNote}>
+          No animation available for this maneuver (regime &quot;{result.regime}
+          &quot;).
+        </div>
+      )}
     </section>
   );
 }
@@ -95,6 +103,7 @@ function buildRequest(
   wheels: WheelArrayState,
   maneuver: ManeuverState,
 ): SlewComputeRequest {
+  const rpm = parseOptional(wheels.maxRpm);
   const req: SlewComputeRequest = {
     total_inertia_kgm2: totalInertia,
     wheel_array: {
@@ -102,6 +111,7 @@ function buildRequest(
       cant_angle_deg: parseNum(wheels.cant, NaN),
       max_torque_per_wheel_nm: parseNum(wheels.tauPerWheel, 0),
       max_momentum_per_wheel_nms: parseNum(wheels.hPerWheel, 0),
+      ...(rpm !== null ? { max_wheel_speed_rpm: rpm } : {}),
     },
     maneuver:
       maneuver.mode === "eigenaxis_angle"
@@ -137,6 +147,14 @@ function parseNum(s: string, fallback: number): number {
   if (s === "" || s == null) return fallback;
   const n = Number(s);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function parseOptional(s: string): number | null {
+  if (s == null) return null;
+  const trimmed = s.trim();
+  if (trimmed === "") return null;
+  const n = Number(trimmed);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 const styles: Record<string, React.CSSProperties> = {

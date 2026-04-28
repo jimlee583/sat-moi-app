@@ -17,6 +17,7 @@ from app.models import (
     SlewComputeRequest,
     SlewComputeResponse,
     SlewCurvePoint,
+    SlewTimeseries,
 )
 from app.services.inertia import InertiaTensor
 from app.services.slew import (
@@ -25,6 +26,7 @@ from app.services.slew import (
     eigenaxis_from_quaternions,
     eigenaxis_inertia,
     pyramid_wheel_axes,
+    simulate_slew_timeseries,
     slew_time_curve,
     slew_time_eigenaxis,
 )
@@ -93,6 +95,31 @@ def compute_slew(req: SlewComputeRequest) -> SlewComputeResponse:
         for i in range(4)
     )
 
+    timeseries: SlewTimeseries | None = None
+    if res.regime in ("torque_limited", "momentum_limited"):
+        ts = simulate_slew_timeseries(
+            angle_rad=angle_rad,
+            inertia_tensor=i_total,
+            eigenaxis_unit=e_unit,
+            wheel_axes=wheel_axes,
+            axis_max_torque=tau_axis,
+            axis_max_momentum=h_axis,
+            slew_time_s=res.slew_time_s,
+            regime=res.regime,
+            n_samples=req.timeseries_samples,
+            max_wheel_speed_rpm=req.wheel_array.max_wheel_speed_rpm,
+            max_momentum_per_wheel_nms=req.wheel_array.max_momentum_per_wheel_nms,
+        )
+        timeseries = SlewTimeseries(
+            t_s=ts.t_s,
+            body_angle_rad=ts.body_angle_rad,
+            body_rate_rad_s=ts.body_rate_rad_s,
+            body_quat_lvlh_to_body=ts.body_quat_lvlh_to_body,
+            wheel_momentum_nms=ts.wheel_momentum_nms,
+            wheel_speed_rpm=ts.wheel_speed_rpm,
+            wheel_rotor_inertia_kgm2=ts.wheel_rotor_inertia_kgm2,
+        )
+
     return SlewComputeResponse(
         eigenaxis_unit=(float(e_unit[0]), float(e_unit[1]), float(e_unit[2])),
         slew_angle_deg=math.degrees(angle_rad),
@@ -109,4 +136,5 @@ def compute_slew(req: SlewComputeRequest) -> SlewComputeResponse:
         slew_time_s=res.slew_time_s,
         wheel_axes_body=wheel_axes_tuple,
         curve=curve,
+        timeseries=timeseries,
     )
