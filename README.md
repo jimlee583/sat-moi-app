@@ -14,6 +14,122 @@ The dev/build environment mirrors `sat-solar-beta-app`: FastAPI + `uv`
 backend, Vite + React 19 + TypeScript frontend, Dockerfile for Cloud Run,
 and Firebase Hosting for the UI.
 
+## Math
+
+All vectors and tensors below are expressed in the **SV body frame** (the same
+frame the base SV tensor is given in), and the **reference point** is the SV
+reference point chosen by the user (typically the SV CG or a geometric
+reference). All quantities are SI (`kg`, `m`, `kg·m²`).
+
+### 1. The inertia tensor
+
+Each rigid body is described by a symmetric `3 × 3` inertia tensor about a
+particular reference point:
+
+$$
+I \;=\;
+\begin{bmatrix}
+I_{xx} & I_{xy} & I_{xz} \\
+I_{xy} & I_{yy} & I_{yz} \\
+I_{xz} & I_{yz} & I_{zz}
+\end{bmatrix}
+\;=\; I^{T}
+$$
+
+The diagonal entries are the moments of inertia about the body axes and the
+off-diagonal entries are the products of inertia. Because $I$ is symmetric,
+only six independent components are stored on the wire (`ixx`, `iyy`, `izz`,
+`ixy`, `ixz`, `iyz`).
+
+### 2. Parallel-axis shift for each deployable
+
+A deployable is supplied with its inertia tensor $I_{\text{local}}$ taken about
+its **own center of mass**, its mass $m$, and the offset vector $\mathbf{r}$
+from the SV reference point to the deployable's CG. To re-express that inertia
+about the SV reference point we apply the tensor form of the parallel-axis
+theorem:
+
+$$
+I_{\text{shifted}} \;=\; I_{\text{local}} \;+\; m\,\Big( (\mathbf{r}\cdot\mathbf{r})\,\mathbf{I}_{3} \;-\; \mathbf{r}\otimes\mathbf{r} \Big)
+$$
+
+where $\mathbf{I}_{3}$ is the `3 × 3` identity matrix and
+$\mathbf{r}\otimes\mathbf{r}$ is the outer product $\mathbf{r}\,\mathbf{r}^{T}$.
+Written component-wise with $\mathbf{r} = (r_x, r_y, r_z)$ and
+$r^{2} = r_x^{2} + r_y^{2} + r_z^{2}$:
+
+$$
+m\Big( r^{2}\mathbf{I}_{3} - \mathbf{r}\mathbf{r}^{T} \Big) \;=\;
+m
+\begin{bmatrix}
+r_y^{2}+r_z^{2} & -r_x r_y & -r_x r_z \\
+-r_x r_y & r_x^{2}+r_z^{2} & -r_y r_z \\
+-r_x r_z & -r_y r_z & r_x^{2}+r_y^{2}
+\end{bmatrix}
+$$
+
+This added term is the inertia of a point mass $m$ located at $\mathbf{r}$
+about the SV reference point, and adding it converts $I_{\text{local}}$ from
+"about the deployable CG" to "about the SV reference point".
+
+If the request flag `already_about_sv_ref` is `true`, the supplied tensor is
+assumed to already be about the SV reference point and the parallel-axis term
+is **not** applied — the tensor is summed in directly.
+
+### 3. Total inertia tensor
+
+With $I_{\text{SV}}$ the base SV tensor (already about the SV reference point)
+and a set of $N$ deployables indexed by $k$, the aggregate inertia tensor about
+the SV reference point is the sum
+
+$$
+I_{\text{total}} \;=\; I_{\text{SV}} \;+\; \sum_{k=1}^{N} I_{\text{shifted},k}
+$$
+
+This is what the API returns as `total_inertia_kgm2`. Total mass is the simple
+scalar sum
+
+$$
+m_{\text{total}} \;=\; m_{\text{SV}} \;+\; \sum_{k=1}^{N} m_{k}.
+$$
+
+### 4. Principal moments and principal axes
+
+The principal moments of inertia are the eigenvalues of $I_{\text{total}}$ and
+the principal axes are the corresponding orthonormal eigenvectors. They satisfy
+the standard eigenvalue problem
+
+$$
+I_{\text{total}}\, \mathbf{v}_i \;=\; \lambda_i\, \mathbf{v}_i, \qquad i = 1, 2, 3
+$$
+
+with $\lambda_1 \le \lambda_2 \le \lambda_3$ and
+$\mathbf{v}_i \cdot \mathbf{v}_j = \delta_{ij}$. Equivalently, there exists an
+orthogonal matrix $V = [\,\mathbf{v}_1\;\mathbf{v}_2\;\mathbf{v}_3\,]$ that
+diagonalizes the tensor:
+
+$$
+V^{T}\, I_{\text{total}}\, V \;=\;
+\begin{bmatrix}
+\lambda_1 & 0 & 0 \\
+0 & \lambda_2 & 0 \\
+0 & 0 & \lambda_3
+\end{bmatrix}.
+$$
+
+Because $I_{\text{total}}$ is real and symmetric, the eigenvalues are real and
+the eigenvectors are mutually orthogonal. The backend computes them with
+`numpy.linalg.eigh` (which assumes a symmetric / Hermitian operand) after
+explicitly symmetrizing $I_{\text{total}}$ via
+$\tfrac{1}{2}(I_{\text{total}} + I_{\text{total}}^{T})$ to suppress any
+floating-point asymmetry. Each returned eigenvector is sign-normalized so its
+largest-magnitude component is positive — eigenvectors are only defined up to a
+sign, and this convention keeps the response deterministic across platforms.
+
+In the API response, `principal_moments_kgm2` is the ascending tuple
+$(\lambda_1, \lambda_2, \lambda_3)$ and `principal_axes[i]` is the unit vector
+$\mathbf{v}_i$ expressed in the SV body frame.
+
 ## Layout
 
 ```
