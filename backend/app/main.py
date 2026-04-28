@@ -3,15 +3,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import moi
+from app.routers import moi, slew
 
 app = FastAPI(
     title="Satellite Moment of Inertia Aggregator",
-    version="1.0.0",
+    version="1.1.0",
     description=(
         "Aggregate a satellite's moment-of-inertia tensor from a base SV tensor "
         "and an arbitrary number of deployables (parallel-axis theorem), "
-        "returning the total tensor plus principal moments and axes."
+        "and compute rest-to-rest eigenaxis slew times for a 4-wheel pyramid RWA."
     ),
 )
 
@@ -28,6 +28,7 @@ app.add_middleware(
 )
 
 app.include_router(moi.router)
+app.include_router(slew.router)
 
 
 @app.get("/health")
